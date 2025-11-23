@@ -1,0 +1,449 @@
+---
+title: "STAT 184 – Activity 14 Final Report"
+author: "Charan Kuragayala"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+format:
+  pdf:
+    toc: false
+    number-sections: false
+    geometry: margin=1in
+editor: visual
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(rvest)
+library(ggplot2)
+library(palmerpenguins)
+```
+
+# Introduction
+
+This report presents the culmination of work from STAT 184, demonstrating key data science skills including data wrangling, visualization, and statistical modeling. The report includes three major components: an analysis of U.S. Armed Forces personnel data exploring the relationship between sex and rank, a time series visualization of popular baby names in the United States, and a mathematical optimization problem involving box volume maximization. Each section showcases the application of reproducible research practices using R and Quarto.
+
+# Armed Forces Data Wrangling
+
+In this section, I wrangle the Armed Forces dataset to transform group-level summary data into individual-level observations. The original data contains counts of service members by pay grade, service branch, and sex. Through a series of data transformations, I expand abbreviated pay grades into full rank names and create a dataset where each row represents an individual service member with their complete rank designation. This cleaned dataset enables detailed analysis of personnel distribution across demographic categories and will be used to explore the relationship between sex and rank in the U.S. Army.
+
+```{r}
+#| label: load-armed-forces-data
+#| include: false
+
+# Load and prepare reference data
+pay_grade_url <- "https://neilhatfield.github.io/Stat184_PayGradeRanks.html"
+pay_grade_page <- read_html(pay_grade_url)
+
+pay_grade_table <- pay_grade_page %>%
+  html_table(fill = TRUE) %>%
+  .[[1]]
+
+# Fix duplicate column names by making them unique
+colnames(pay_grade_table) <- make.unique(colnames(pay_grade_table))
+
+pay_grade_ranks_long <- pay_grade_table %>%
+  rename(PayGrade = 1) %>%
+  pivot_longer(
+    cols = -PayGrade,
+    names_to = "ServiceBranch",
+    values_to = "Rank"
+  ) %>%
+  # Remove the numeric suffixes added by make.unique (e.g., ".1", ".2")
+  mutate(ServiceBranch = str_remove(ServiceBranch, "\\.\\d+$")) %>%
+  mutate(
+    Category = case_when(
+      str_starts(PayGrade, "E") ~ "Enlisted",
+      str_starts(PayGrade, "W") ~ "Warrant Officer",
+      str_starts(PayGrade, "O") ~ "Officer",
+      TRUE ~ NA_character_
+    ),
+    Rank = na_if(Rank, "--")
+  ) %>%
+  filter(ServiceBranch != "Coast Guard")
+
+# Create raw armed forces data
+armed_forces_raw <- tribble(
+  ~PayGrade, ~Army.Male, ~Army.Female, ~Navy.Male, ~Navy.Female, ~MarineCorps.Male, ~MarineCorps.Female, ~AirForce.Male, ~AirForce.Female, ~SpaceForce.Male, ~SpaceForce.Female,
+  "E1", 7429, 1326, 8903, 3434, 7849, 655, 8537, 1933, 179, 38,
+  "E2", 22338, 4336, 17504, 5833, 15034, 1684, 7343, 2019, 186, 41,
+  "E3", 43775, 10229, 25436, 9103, 35239, 4174, 37324, 10369, 1015, 194,
+  "E4", 79234, 15143, 33859, 9959, 28519, 2961, 53185, 15055, 541, 179,
+  "E5", 54803, 10954, 58142, 16169, 22262, 2670, 40614, 10762, 859, 173,
+  "E6", 49502, 7363, 45833, 9950, 12225, 1529, 31400, 6679, 853, 147,
+  "E7", 30264, 4410, 19046, 3434, 7720, 747, 18309, 4807, 535, 114,
+  "E8", 9482, 1472, 6007, 850, 3495, 293, 3876, 1221, 112, 25,
+  "E9", 2865, 394, 2574, 368, 1515, 82, 1903, 523, 47, 16,
+  "W1", 3727, 460, 44, 4, 494, 44, 27, 1, NA, NA,
+  "W2", 6024, 692, 641, 91, 725, 53, 33, 1, NA, NA,
+  "W3", 2794, 346, 744, 115, 518, 32, 0, 0, NA, NA,
+  "W4", 1378, 137, 432, 41, 265, 12, 0, 0, NA, NA,
+  "W5", 494, 43, 69, 6, 104, 3, 0, 0, NA, NA,
+  "O1", 7122, 2400, 5497, 1766, 2412, 366, 5048, 1985, 412, 152,
+  "O2", 9550, 3006, 5544, 1716, 3162, 525, 5045, 2037, 437, 155,
+  "O3", 20986, 6053, 14480, 4830, 5385, 707, 15715, 5485, 997, 280,
+  "O4", 12350, 3044, 7983, 2306, 3637, 338, 9682, 3440, 941, 209,
+  "O5", 6939, 1531, 5525, 1151, 1830, 137, 7373, 1890, 657, 124,
+  "O6", 3161, 452, 2644, 452, 656, 54, 2663, 569, 206, 42,
+  "O7", 100, 18, 101, 5, 36, 2, 99, 18, 11, 2,
+  "O8", 80, 8, 62, 6, 28, 2, 63, 6, 10, 0,
+  "O9", 46, 5, 32, 2, 17, 1, 30, 7, 4, 1,
+  "O10", 11, 0, 8, 0, 3, 0, 11, 0, 3, 0
+)
+
+# Create group-level data
+group_level_data <- armed_forces_raw %>%
+  pivot_longer(
+    cols = -PayGrade,
+    names_to = "Branch_Sex",
+    values_to = "Count"
+  ) %>%
+  mutate(
+    Sex = str_extract(Branch_Sex, "(Male|Female)$"),
+    ServiceBranch = str_remove(Branch_Sex, "\\.(Male|Female)$")
+  ) %>%
+  mutate(
+    ServiceBranch = case_when(
+      ServiceBranch == "MarineCorps" ~ "Marine Corps",
+      ServiceBranch == "AirForce" ~ "Air Force",
+      ServiceBranch == "SpaceForce" ~ "Space Force",
+      TRUE ~ ServiceBranch
+    )
+  ) %>%
+  select(-Branch_Sex) %>%
+  filter(!is.na(Count)) %>%
+  left_join(
+    pay_grade_ranks_long,
+    by = c("PayGrade", "ServiceBranch")
+  ) %>%
+  select(PayGrade, ServiceBranch, Sex, Count, Rank, Category) %>%
+  arrange(PayGrade, ServiceBranch, Sex)
+
+# Create individual-level data
+individual_level_data <- group_level_data %>%
+  uncount(Count)
+```
+
+```{r}
+#| label: army-frequency-table
+
+# Create frequency table for Army enlisted ranks
+army_enlisted_table <- individual_level_data %>%
+  filter(ServiceBranch == "Army", Category == "Enlisted") %>%
+  count(Sex, Rank) %>%
+  pivot_wider(names_from = Sex, values_from = n, values_fill = 0) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  select(Rank, everything())
+```
+
+# Frequency Table: Sex and Rank in the U.S. Army
+
+**Table 1:** Frequency table comparing sex and enlisted ranks in the U.S. Army
+
+```{r}
+#| label: display-frequency-table
+
+knitr::kable(army_enlisted_table, 
+             format = "simple",
+             align = c("l", "r", "r", "r"))
+```
+
+The frequency table reveals the distribution of enlisted personnel in the U.S. Army across ranks and sex. The data shows that males outnumber females at every enlisted rank level, with the disparity being most pronounced at the lower ranks such as Private First Class and Specialist, where there are over 70,000 male soldiers compared to approximately 10,000-15,000 female soldiers. The ratio of male to female personnel remains relatively consistent across ranks, hovering around 5:1 to 6:1, suggesting that sex and rank may not be independent variables. If they were independent, we would expect to see more variation in this ratio across different rank levels. The consistency of the gender distribution across all enlisted ranks indicates a systemic pattern where females are underrepresented throughout the enlisted hierarchy, rather than being concentrated at or excluded from specific rank levels.
+
+# Baby Names Analysis
+
+For this project, I chose to analyze the popularity trends of three names: Emma, Liam, and Noah. I selected these names because they represent contemporary popular choices that have shown interesting variations in usage over recent decades. Emma has been a consistently popular name for girls, while Liam and Noah have experienced dramatic rises in popularity for boys in the 21st century. By examining these names together, I can explore how naming trends evolve over time and whether certain names experience sustained popularity or temporary surges.
+
+```{r}
+#| label: baby-names-data
+#| include: false
+
+# Load baby names data
+data("babynames", package = "babynames")
+
+# Filter for selected names
+selected_names <- babynames %>%
+  filter(name %in% c("Emma", "Liam", "Noah")) %>%
+  group_by(year, name) %>%
+  summarize(total = sum(n), .groups = "drop")
+```
+
+**Figure 1:** Time series of chosen baby names in the U.S. showing popularity trends from 1880 to present
+
+```{r}
+#| label: baby-names-plot
+#| fig.width: 8
+#| fig.height: 5
+#| fig.alt: "Line graph showing the number of babies given the names Emma, Liam, and Noah from 1880 to 2017. Emma shows moderate usage in the early 1900s, declining until the 1980s when it begins a sharp rise. Liam shows minimal usage until the 1990s when it begins exponential growth. Noah shows low but steady usage throughout history with a sharp increase beginning in the 1990s."
+
+ggplot(data = selected_names, 
+       mapping = aes(x = year, y = total, color = name, linetype = name)) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("Emma" = "#E69F00", 
+                                "Liam" = "#56B4E9", 
+                                "Noah" = "#009E73")) +
+  scale_linetype_manual(values = c("Emma" = "solid", 
+                                   "Liam" = "dashed", 
+                                   "Noah" = "dotted")) +
+  labs(
+    x = "Year",
+    y = "Number of Babies",
+    color = "Name",
+    linetype = "Name"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5),
+    text = element_text(size = 12)
+  )
+```
+
+The time series visualization reveals distinct popularity patterns for each name. Emma demonstrates a U-shaped trend, with high usage in the early 1900s declining through the mid-century before experiencing a dramatic resurgence starting in the 1980s, reaching peak popularity in recent years. Liam shows almost negligible usage throughout most of the 20th century, but explodes in popularity beginning in the 1990s, demonstrating one of the most dramatic increases in baby name history. Noah exhibits a different pattern with relatively steady but low usage throughout history, followed by a sharp upward trajectory starting in the 1990s that parallels Liam's rise. The convergence of these three names at high popularity levels in recent decades suggests a broader shift in naming preferences, possibly reflecting cultural trends toward traditional yet distinctive names that feel both classic and modern.
+
+# Box Problem Analysis
+
+The box problem involves determining the optimal dimensions for creating an open-top box from a rectangular piece of paper. Starting with a 36-inch by 48-inch sheet, we cut equal-sized squares from each corner and fold up the sides to form a box. The challenge is to find the size of the cut-out squares that maximizes the box's volume.
+
+```{r}
+#| label: box-problem-function
+#| include: false
+
+# Define the box volume function for 36 x 48 inch paper
+box_volume <- function(x) {
+  length <- 48 - 2 * x
+  width <- 36 - 2 * x
+  height <- x
+  volume <- length * width * height
+  return(volume)
+}
+```
+
+**Figure 2:** Volume of the box as a function of the cut-out size for a 36 × 48 inch piece of paper
+
+```{r}
+#| label: box-problem-plot
+#| fig.width: 8
+#| fig.height: 5
+#| fig.alt: "A curved line graph showing box volume on the y-axis ranging from 0 to 4000 cubic inches and cut-out size on the x-axis ranging from 0 to 18 inches. The curve starts at zero, increases to a maximum around x equals 6 inches where volume peaks near 3800 cubic inches, then decreases back toward zero as x approaches 18 inches."
+
+ggplot(data = data.frame(x = c(0, 18)), mapping = aes(x = x)) +
+  stat_function(fun = box_volume, color = "#0072B2", linewidth = 1.2) +
+  labs(
+    x = "Cut-out Size (inches)",
+    y = "Box Volume (cubic inches)"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 12)
+  ) +
+  scale_x_continuous(breaks = seq(0, 18, by = 2)) +
+  scale_y_continuous(breaks = seq(0, 4000, by = 500))
+```
+
+The graph displays a clear parabolic relationship between the cut-out size and the resulting box volume. The volume starts at zero when no cuts are made, increases as the cut-out size grows, reaches a maximum value, and then decreases back toward zero as the cuts become too large. The maximum volume occurs at approximately x = 6 inches, where the box achieves a volume of roughly 3,800 cubic inches. At this optimal cut-out size, the box dimensions would be approximately 36 inches long, 24 inches wide, and 6 inches tall. Cutting squares smaller or larger than 6 inches results in reduced volume, with the relationship being symmetric around the maximum point. This optimization problem demonstrates how calculus concepts apply to practical design decisions, showing that there exists a unique optimal solution that balances the competing effects of height and base area.
+
+# What I've Learned So Far
+
+Throughout STAT 184, I have developed a comprehensive understanding of data science fundamentals and their practical applications. I learned how to wrangle complex datasets through pivoting operations, joining tables, and transforming data structures to suit analytical needs, as demonstrated in the Armed Forces analysis where I converted group-level data into individual observations. I gained proficiency in creating effective data visualizations using ggplot2, understanding principles of visual design including the importance of accessibility features like color-blind safe palettes and alternative text. The course taught me to write reproducible research documents using Quarto, integrating code, visualizations, and narrative text into professional reports. I also developed skills in exploratory data analysis, learning to identify patterns and relationships in data through frequency tables and statistical summaries. Beyond technical skills, I learned the importance of clear communication in data science, crafting narratives that help readers understand both what the data shows and why it matters. Finally, working with diverse projects from military personnel data to historical naming trends taught me how to apply consistent analytical frameworks across different domains while adapting my approach to suit the specific context and questions at hand.
+
+# Code Appendix
+
+## Armed Forces Wrangling Code
+
+```{r}
+#| label: armed-forces-code
+#| echo: true
+#| eval: false
+
+## Load Packages ----
+library(tidyverse)
+library(rvest)
+
+## Load and Prepare Pay Grade/Rank Reference Data ----
+# Fetch the Pay Grade and Rank webpage
+pay_grade_url <- "https://neilhatfield.github.io/Stat184_PayGradeRanks.html"
+pay_grade_page <- read_html(pay_grade_url)
+
+# Extract the table from the webpage
+pay_grade_table <- pay_grade_page %>%
+  html_table(fill = TRUE) %>%
+  .[[1]]  # Get the first (and only) table
+
+# Fix duplicate column names by making them unique
+colnames(pay_grade_table) <- make.unique(colnames(pay_grade_table))
+
+# Clean and structure the reference data into long format
+pay_grade_ranks_long <- pay_grade_table %>%
+  rename(PayGrade = 1) %>%
+  pivot_longer(
+    cols = -PayGrade,
+    names_to = "ServiceBranch",
+    values_to = "Rank"
+  ) %>%
+  # Remove the numeric suffixes added by make.unique
+  mutate(ServiceBranch = str_remove(ServiceBranch, "\\.\\d+$")) %>%
+  mutate(
+    Category = case_when(
+      str_starts(PayGrade, "E") ~ "Enlisted",
+      str_starts(PayGrade, "W") ~ "Warrant Officer",
+      str_starts(PayGrade, "O") ~ "Officer",
+      TRUE ~ NA_character_
+    ),
+    Rank = na_if(Rank, "--")
+  ) %>%
+  filter(ServiceBranch != "Coast Guard")
+
+## Load Armed Forces Data ----
+armed_forces_raw <- tribble(
+  ~PayGrade, ~Army.Male, ~Army.Female, ~Navy.Male, ~Navy.Female, 
+  ~MarineCorps.Male, ~MarineCorps.Female, ~AirForce.Male, ~AirForce.Female, 
+  ~SpaceForce.Male, ~SpaceForce.Female,
+  "E1", 7429, 1326, 8903, 3434, 7849, 655, 8537, 1933, 179, 38,
+  "E2", 22338, 4336, 17504, 5833, 15034, 1684, 7343, 2019, 186, 41,
+  "E3", 43775, 10229, 25436, 9103, 35239, 4174, 37324, 10369, 1015, 194,
+  "E4", 79234, 15143, 33859, 9959, 28519, 2961, 53185, 15055, 541, 179,
+  "E5", 54803, 10954, 58142, 16169, 22262, 2670, 40614, 10762, 859, 173,
+  "E6", 49502, 7363, 45833, 9950, 12225, 1529, 31400, 6679, 853, 147,
+  "E7", 30264, 4410, 19046, 3434, 7720, 747, 18309, 4807, 535, 114,
+  "E8", 9482, 1472, 6007, 850, 3495, 293, 3876, 1221, 112, 25,
+  "E9", 2865, 394, 2574, 368, 1515, 82, 1903, 523, 47, 16,
+  "W1", 3727, 460, 44, 4, 494, 44, 27, 1, NA, NA,
+  "W2", 6024, 692, 641, 91, 725, 53, 33, 1, NA, NA,
+  "W3", 2794, 346, 744, 115, 518, 32, 0, 0, NA, NA,
+  "W4", 1378, 137, 432, 41, 265, 12, 0, 0, NA, NA,
+  "W5", 494, 43, 69, 6, 104, 3, 0, 0, NA, NA,
+  "O1", 7122, 2400, 5497, 1766, 2412, 366, 5048, 1985, 412, 152,
+  "O2", 9550, 3006, 5544, 1716, 3162, 525, 5045, 2037, 437, 155,
+  "O3", 20986, 6053, 14480, 4830, 5385, 707, 15715, 5485, 997, 280,
+  "O4", 12350, 3044, 7983, 2306, 3637, 338, 9682, 3440, 941, 209,
+  "O5", 6939, 1531, 5525, 1151, 1830, 137, 7373, 1890, 657, 124,
+  "O6", 3161, 452, 2644, 452, 656, 54, 2663, 569, 206, 42,
+  "O7", 100, 18, 101, 5, 36, 2, 99, 18, 11, 2,
+  "O8", 80, 8, 62, 6, 28, 2, 63, 6, 10, 0,
+  "O9", 46, 5, 32, 2, 17, 1, 30, 7, 4, 1,
+  "O10", 11, 0, 8, 0, 3, 0, 11, 0, 3, 0
+)
+
+## Data Wrangling: Create Group-Level Data Frame ----
+group_level_data <- armed_forces_raw %>%
+  pivot_longer(
+    cols = -PayGrade,
+    names_to = "Branch_Sex",
+    values_to = "Count"
+  ) %>%
+  mutate(
+    Sex = str_extract(Branch_Sex, "(Male|Female)$"),
+    ServiceBranch = str_remove(Branch_Sex, "\\.(Male|Female)$")
+  ) %>%
+  mutate(
+    ServiceBranch = case_when(
+      ServiceBranch == "MarineCorps" ~ "Marine Corps",
+      ServiceBranch == "AirForce" ~ "Air Force",
+      ServiceBranch == "SpaceForce" ~ "Space Force",
+      TRUE ~ ServiceBranch
+    )
+  ) %>%
+  select(-Branch_Sex) %>%
+  filter(!is.na(Count)) %>%
+  left_join(
+    pay_grade_ranks_long,
+    by = c("PayGrade", "ServiceBranch")
+  ) %>%
+  select(PayGrade, ServiceBranch, Sex, Count, Rank, Category) %>%
+  arrange(PayGrade, ServiceBranch, Sex)
+
+## Data Wrangling: Create Individual-Level Data Frame ----
+individual_level_data <- group_level_data %>%
+  uncount(Count)
+```
+
+## Frequency Table Code
+
+```{r}
+#| label: frequency-table-code
+#| echo: true
+#| eval: false
+
+# Create frequency table for Army enlisted ranks
+army_enlisted_table <- individual_level_data %>%
+  filter(ServiceBranch == "Army", Category == "Enlisted") %>%
+  count(Sex, Rank) %>%
+  pivot_wider(names_from = Sex, values_from = n, values_fill = 0) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  select(Rank, everything())
+```
+
+## Baby Names Cleaning and Plot Code
+
+```{r}
+#| label: baby-names-code
+#| echo: true
+#| eval: false
+
+# Load baby names data
+library(babynames)
+data("babynames")
+
+# Filter for selected names
+selected_names <- babynames %>%
+  filter(name %in% c("Emma", "Liam", "Noah")) %>%
+  group_by(year, name) %>%
+  summarize(total = sum(n), .groups = "drop")
+
+# Create time series plot
+ggplot(data = selected_names, 
+       mapping = aes(x = year, y = total, color = name, linetype = name)) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("Emma" = "#E69F00", 
+                                "Liam" = "#56B4E9", 
+                                "Noah" = "#009E73")) +
+  scale_linetype_manual(values = c("Emma" = "solid", 
+                                   "Liam" = "dashed", 
+                                   "Noah" = "dotted")) +
+  labs(
+    x = "Year",
+    y = "Number of Babies",
+    color = "Name",
+    linetype = "Name"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 12)
+  )
+```
+
+## Box Problem Function and Plot Code
+
+```{r}
+#| label: box-problem-code-appendix
+#| echo: true
+#| eval: false
+
+# Define the box volume function for 36 x 48 inch paper
+box_volume <- function(x) {
+  length <- 48 - 2 * x
+  width <- 36 - 2 * x
+  height <- x
+  volume <- length * width * height
+  return(volume)
+}
+
+# Create plot using stat_function
+ggplot(data = data.frame(x = c(0, 18)), mapping = aes(x = x)) +
+  stat_function(fun = box_volume, color = "#0072B2", linewidth = 1.2) +
+  labs(
+    x = "Cut-out Size (inches)",
+    y = "Box Volume (cubic inches)"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12)) +
+  scale_x_continuous(breaks = seq(0, 18, by = 2)) +
+  scale_y_continuous(breaks = seq(0, 4000, by = 500))
+```
